@@ -14,7 +14,7 @@ from pystac_client import Client
 import numexpr as ne
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-logger = logging.getLogger("boreal_ndvi_trend")
+logger = logging.getLogger("boreal_si")
 # maap = MAAP()
 # GDAL configurations used to successfully access LP DAAC Cloud Assets via vsicurl 
 gdal.SetConfigOption('GDAL_HTTP_COOKIEFILE','~/cookies.txt')
@@ -23,7 +23,6 @@ gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN','EMPTY_DIR')
 gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS','TIF')
 gdal.SetConfigOption('GDAL_HTTP_UNSAFESSL', 'YES')
 gdal.SetConfigOption('GDAL_HTTP_MAX_RETRY', '10')
-gdal.SetConfigOption('GDAL_HTTP_RETRY_DELAY', '0.5')
 gdal.SetConfigOption('GDAL_HTTP_RETRY_DELAY', '0.5')
 
 def split_s3_path(s3_path):
@@ -50,7 +49,7 @@ def mask_qa(qa_arr, mask_list=['dilated_cloud','cloud','shadow','snow','water'])
 		if m in QA_BIT.keys():
 			msk += (qa_arr & (1 << QA_BIT[m])) > 0
 	return msk > 0
-def index_setup(tile,indices,output):
+def index_setup(tile,year,indices,output):
 	indices = indices.split(',')
 	client = boto3.client('s3')
 	index_bands = {'ndvi':['nir08','red'],'evi':['nir08','red','blue'],'savi':['nir08','red'],'msavi':['nir08','red'],'ndwi':['green','nir08'],'ndmi':['nir08','swir16'],'nbr2':['swir16','swir22'],'tvi':['nir08','red','green']}
@@ -60,8 +59,8 @@ def index_setup(tile,indices,output):
 	si_min = -10000
 	scaler = 10000
 	nodata =-19999
-	warp_options = gdal.WarpOptions(xRes=0.00025,yRes=0.00025,dstNodata=0,dstSRS='EPSG:4326',outputBounds=[xmin,ymin,xmax,ymax],format='COG',targetAlignedPixels=True,creationOptions=['COMPRESS=LZW'])
-	qa_warp_options = gdal.WarpOptions(xRes=0.00025,yRes=0.00025,dstSRS='EPSG:4326',outputBounds=[xmin,ymin,xmax,ymax],format='COG',targetAlignedPixels=True,creationOptions=['COMPRESS=LZW'])
+	warp_options = gdal.WarpOptions(xRes=0.00025,yRes=0.00025,srcNodata=0,dstNodata=0,dstSRS='EPSG:4326',outputBounds=[xmin,ymin,xmax,ymax],format='COG',targetAlignedPixels=True,creationOptions=['COMPRESS=LZW'])
+	qa_warp_options = gdal.WarpOptions(xRes=0.00025,yRes=0.00025,srcNodata=1,dstNodata=1,dstSRS='EPSG:4326',outputBounds=[xmin,ymin,xmax,ymax],format='COG',targetAlignedPixels=True,creationOptions=['COMPRESS=LZW'])
 	url = 'https://landsatlook.usgs.gov/stac-server'
 	collections = ['landsat-c2l2-sr']
 	equations = {index: index_equations[index] for index in indices if index in index_equations}
@@ -71,15 +70,17 @@ def index_setup(tile,indices,output):
 	val_min = 7273
 	val_max = 43636
 	bands = list(set([b for index in indices for b in index_bands[index]])) 
+
 	
-	for year in range(1984,2013):
-		with tempfile.TemporaryDirectory() as tmpdir:
-			catalog = Client.open(url)
+	with tempfile.TemporaryDirectory() as tmpdir:
+		catalog = Client.open(url)
+		for year in range(1984,2013):
 			query = catalog.search(collections=collections, datetime=f'{year}-07/{year}-08',limit=50, bbox=(xmin-0.0125,ymin-0.0125,xmax+0.0125,ymax+0.015))
 			for page_dict in query.pages_as_dicts():
 				for item_dict in page_dict['features']:
 					id = item_dict['id']
-					input_array = np.full((len(bands),size,size),np.nan,dtype=np.float32)
+					logger.info(f'Found {id} for {tile},{year}')
+					input_arrays = {band:np.full(size,size),np.nan,dtype=np.float32) for b,band in enumerate(bands)}
 					gt = None
 					wkt = None
 					mask_array = None
@@ -109,12 +110,12 @@ def index_setup(tile,indices,output):
 								gt = ds.GetGeoTransform()
 								wkt = ds.GetProjectionRef()
 								xsize, ysize=ds.RasterXSize,ds.RasterYSize
-								band = ds.GetRasterBand(1)
-								band_array = np.array(band.ReadAsArray())
+								data_band = ds.GetRasterBand(1)
+								band_array = np.array(data_band.ReadAsArray())
 								ds = None
 								band_array_float = np.where((band_array>=val_min)&(band_array<=val_max),sf*band_array+offset,np.nan)
 								band_array = None
-								input_array[b,:,:] = band_array_float
+								input_arrays[band] = band_array_float
 								band_array_float = None
 							else:
 								logger.info(f'{band_file} not found')
@@ -123,7 +124,6 @@ def index_setup(tile,indices,output):
 						logger.info(f'Loading QA error: {err}')
 						process_flag = False
 					if process_flag:
-						input_arrays = {band:input_array[b,:,:] for b,band in enumerate(bands)}
 						for si in equations:
 							output_array = ne.evaluate(equations[si],local_dict=input_arrays)
 							output_array = np.where(np.isnan(output_array),nodata,scaler*output_array)
@@ -141,6 +141,7 @@ def index_setup(tile,indices,output):
 							band.FlushCache()
 							del output_ds
 							shutil.copyfile(f'{tmpdir}/si.tif',f'{output}/{tile}_{year}_{id}_{si}.tif')
+					input_arrays = None
 
 		
 def main():
