@@ -80,7 +80,7 @@ def index_setup(tile,year,indices,output):
 				for item_dict in page_dict['features']:
 					id = item_dict['id']
 					logger.info(f'Found {id} for {tile},{year}')
-					input_arrays = {band:np.full(size,size),np.nan,dtype=np.float32) for b,band in enumerate(bands)}
+					input_arrays = {band:np.full((size,size),np.nan,dtype=np.float32) for b,band in enumerate(bands)}
 					gt = None
 					wkt = None
 					mask_array = None
@@ -89,6 +89,7 @@ def index_setup(tile,year,indices,output):
 					try:
 						date_str = id.split('_')[3]
 						qa_file = item_dict['assets']['qa_pixel']['alternate']['s3']['href'].replace('s3://','/vsis3/').replace('usgs-landsat-ard/','usgs-landsat/')
+						print(qa_file)
 						qa_warped = gdal.Warp(f'{tmpdir}/qa.tif', qa_file, options=qa_warp_options)
 						qa_warped = None
 						qa_ds = gdal.Open(f'{tmpdir}/qa.tif')
@@ -96,6 +97,7 @@ def index_setup(tile,year,indices,output):
 						wkt = qa_ds.GetProjectionRef()
 						qa_band = qa_ds.GetRasterBand(1)
 						qa_array = np.array(qa_band.ReadAsArray())
+						print(qa_file)
 						mask_array = mask_qa(qa_array)
 						qa_ds = None
 						for b,band in enumerate(bands):
@@ -121,7 +123,7 @@ def index_setup(tile,year,indices,output):
 								logger.info(f'{band_file} not found')
 								process_flag = False
 					except Exception as err:
-						logger.info(f'Loading QA error: {err}')
+						logger.info(f'Loading {band_file} error: {err}')
 						process_flag = False
 					if process_flag:
 						for si in equations:
