@@ -89,7 +89,6 @@ def index_setup(tile,year,indices,output):
 					try:
 						date_str = id.split('_')[3]
 						qa_file = item_dict['assets']['qa_pixel']['alternate']['s3']['href'].replace('s3://','/vsis3/').replace('usgs-landsat-ard/','usgs-landsat/')
-						print(qa_file)
 						qa_warped = gdal.Warp(f'{tmpdir}/qa.tif', qa_file, options=qa_warp_options)
 						qa_warped = None
 						qa_ds = gdal.Open(f'{tmpdir}/qa.tif')
@@ -97,7 +96,6 @@ def index_setup(tile,year,indices,output):
 						wkt = qa_ds.GetProjectionRef()
 						qa_band = qa_ds.GetRasterBand(1)
 						qa_array = np.array(qa_band.ReadAsArray())
-						print(qa_file)
 						mask_array = mask_qa(qa_array)
 						qa_ds = None
 						for b,band in enumerate(bands):
