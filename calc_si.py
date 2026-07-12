@@ -49,7 +49,7 @@ def mask_qa(qa_arr, mask_list=['dilated_cloud','cloud','shadow','snow','water'])
 		if m in QA_BIT.keys():
 			msk += (qa_arr & (1 << QA_BIT[m])) > 0
 	return msk > 0
-def index_setup(tile,year,indices,output):
+def index_setup(tile,indices,output):
 	indices = indices.split(',')
 	client = boto3.client('s3')
 	index_bands = {'ndvi':['nir08','red'],'evi':['nir08','red','blue'],'savi':['nir08','red'],'msavi':['nir08','red'],'ndwi':['green','nir08'],'ndmi':['nir08','swir16'],'nbr2':['swir16','swir22'],'tvi':['nir08','red','green']}
