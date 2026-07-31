@@ -24,5 +24,5 @@ OUTPUTDIR="${PWD}/output"
 
 python ${basedir}/calc_si.py \
 --tile ${1} \
---indices ${2}\
+--indices ${2} \
 --output ${OUTPUTDIR}
