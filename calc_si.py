@@ -53,7 +53,7 @@ def index_setup(tile,indices,output):
 	indices = indices.split(',')
 	client = boto3.client('s3')
 	index_bands = {'ndvi':['nir08','red'],'evi':['nir08','red','blue'],'savi':['nir08','red'],'msavi':['nir08','red'],'ndwi':['green','nir08'],'ndmi':['nir08','swir16'],'nbr2':['swir16','swir22'],'tvi':['nir08','red','green']}
-	index_equations = {'ndvi':'(nir08-red)/(nir08+red)','evi':'2.5*(nir08-red)/(nir08+6*red-7.5*blue+1)','savi':'1.5*(nir08-red)/(nir08+red+0.5)','msavi':'0.5*(2*nir08+1-sqrt((2*nir08+1)*(2*nir08+1)–8*(nir08-red)))','ndwi':'(green-nir08)/(green+nir08)','ndmi':'(nir08-swir16)/(nir08+swir16)','nbr2':'(swir16-swir22)/(swir16+swir22)','tvi':'0.5*(120*(nir08-green)-200*(red-green))'}
+	index_equations = {'ndvi':'(nir08-red)/(nir08+red)','evi':'2.5*(nir08-red)/(nir08+6*red-7.5*blue+1)','savi':'1.5*(nir08-red)/(nir08+red+0.5)','msavi':'0.5*(2*nir08+1-sqrt((2*nir08+1)*(2*nir08+1)-8*(nir08-red)))','ndwi':'(green-nir08)/(green+nir08)','ndmi':'(nir08-swir16)/(nir08+swir16)','nbr2':'(swir16-swir22)/(swir16+swir22)','tvi':'0.5*(120*(nir08-green)-200*(red-green))'}
 	xmin,ymin,xmax,ymax = tile_bounds(tile)
 	si_max = 10000
 	si_min = -10000
