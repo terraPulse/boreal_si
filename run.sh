@@ -1,28 +1,28 @@
 #!/bin/bash
-# this is intended for running DPS jobs; the input directory is where a single file has been pulled because download=TRUE in the algorithm_config.yaml file
+# this is intended for running DPS jobs
+# Usage: run.sh <tile e.g. 150W65N or 14975W6525N> <indices e.g. ndvi,evi> <start_year> <end_year> [collection: landsat|hls]
+# collection defaults to landsat. hls is read over HTTPS and needs Earthdata Login credentials in ~/.netrc.
 
-# This installs the python libs needed to run the script at the bottom
-
-set -x
+set -ex
+set -o pipefail
 
 source activate python
 
+# Avoid a PROJ_LIB from the base image conflicting with the conda env's GDAL/PROJ data
 unset PROJ_LIB
 
-mkdir output
+mkdir -p output
 
-basedir=$( cd "$(dirname "$0")" ; pwd -P ) 
-
-## Hard coded args for each run (if any; usually just output dir)
+basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
 # Work dir is always from where your script is called
 # Base dir is always the relative dir within the run*.sh script
-
-# Absolute path here
-# This PWD is wherever the job is run (where the .sh is called from) 
 OUTPUTDIR="${PWD}/output"
 
-python ${basedir}/calc_si.py \
---tile ${1} \
---indices ${2} \
---output ${OUTPUTDIR}
+python "${basedir}/calc_si.py" \
+--tile "${1}" \
+--indices "${2}" \
+--ys "${3}" \
+--ye "${4}" \
+--collection "${5:-landsat}" \
+--output "${OUTPUTDIR}"
