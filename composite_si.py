@@ -64,7 +64,7 @@ def block_stats(si_arrays, fill_value, budget=MEMORY_BUDGET):
 
 
 
-def composite_index(tile, indices, ys, ye, ds, de, output, src):
+def composite_index(tile, indices, ys, ye, ds, de, src, output):
 	source = SOURCES[src]
 	index_names = parse_indices(indices)
 	xmin, ymin, xmax, ymax = tile_bounds(tile)
