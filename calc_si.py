@@ -96,6 +96,8 @@ def main():
 	parser.add_argument('--output', type=str, required=True)
 	
 	args = parser.parse_args()
+	if not args.indices.strip():    # DPS passes an empty string when no indices are given
+		args.indices = parser.get_default('indices')
 	if args.ys > args.ye:
 		parser.error('--ys must be <= --ye')
 	calc_index(args.tile, args.indices, args.ys, args.ye, args.ds, args.de, args.src, args.output)

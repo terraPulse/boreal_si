@@ -3,6 +3,7 @@ channels:
   - conda-forge
   - nodefaults
 dependencies:
+  - python=3.12
   - numexpr
   - gdal
   - boto3
@@ -11,3 +12,7 @@ dependencies:
   - jsonschema
   - earthaccess
   - numpy
+  - importlib-resources<7   # maap-py requires <7
+  - pip
+  - pip:
+    - maap-py==4.2.0
