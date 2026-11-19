@@ -121,14 +121,14 @@ def load_si_band(item_dict, asset_key, source, band_options, qa_options):
 	return np.ma.masked_equal(si, NODATA), gt, wkt
 
 
-def write_cog(array, gt, wkt, cog_file):
+def write_cog(array, gt, wkt, cog_file, nodata=NODATA):
 	"""Write array to a COG, via a temporary name so a failure never leaves a partial output."""
 	mem = gdal.GetDriverByName('MEM').Create('', array.shape[1], array.shape[0], 1, gdal.GDT_Int16)
 	mem.SetGeoTransform(gt)
 	mem.SetProjection(wkt)
 	band = mem.GetRasterBand(1)
 	band.WriteArray(array)
-	band.SetNoDataValue(NODATA)
+	band.SetNoDataValue(nodata)
 	band.FlushCache()
 	part = cog_file + '.part'
 	try:

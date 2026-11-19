@@ -119,7 +119,7 @@ The equations and band lists are defined in `si_utils.py` (`INDEX_EQUATIONS`, `I
 
 ## Outputs
 
-All COGs are Int16, LZW-compressed, with nodata −19999. Each COG has a STAC item next to it with the same name and a `.json` extension.
+All COGs are Int16 and LZW-compressed. The nodata value is −19999, except for the `_cnt` composite counts (see below). Each COG has a STAC item next to it with the same name and a `.json` extension.
 
 `calc_si.py`, for each scene and index:
 
@@ -129,8 +129,9 @@ All COGs are Int16, LZW-compressed, with nodata −19999. Each COG has a STAC it
 
 - `<tile>_<year>_<INDEX>_med.tif`: median, truncated toward zero to an integer.
 - `<tile>_<year>_<INDEX>_max.tif`: maximum.
+- `<tile>_<year>_<INDEX>_cnt.tif`: number of valid scenes used for each pixel. Int16 with nodata 0 (not −19999) and no scaling, so its STAC raster `scale` is 1.
 
-`composite_si.py` searches once per year and reuses the scene list for every index. A pixel with no valid observation is nodata. In `composite_si.py` a pixel is masked when it is flagged in QA or outside `val_min` to `val_max`.
+`composite_si.py` searches once per year and reuses the scene list for every index. It holds each usable scene as an Int16 array and computes the median and maximum in blocks of rows. The block size is chosen from the number of scenes so that the arrays stay within `MEMORY_BUDGET` (10 GiB, in `composite_si.py`). On a 16 GiB machine, a 1° tile with 100 scenes peaks at about 11 GiB. Above about 320 scenes per tile the held scenes alone exceed the budget, and a warning is logged. A pixel with no valid observation is nodata. In `composite_si.py` a pixel is masked when it is flagged in QA or outside `val_min` to `val_max`.
 
 For each job, `catalog.json` is a self-contained STAC catalog that links all items written by the job.
 
