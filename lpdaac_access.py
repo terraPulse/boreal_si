@@ -18,7 +18,7 @@ os.environ['CPL_VSIL_CURL_NON_CACHED'] = '/vsis3/'
 os.environ['GDAL_MAX_DATASET_POOL_SIZE'] = '4000'
 earthaccess.login(strategy="environment")
 
-S3_CREDENTIAL_MAX_AGE = 55 * 60   # seconds; the temporary LP DAAC credentials last about an hour
+S3_CREDENTIAL_MAX_AGE = 50 * 60   # seconds; the temporary LP DAAC credentials last about an hour
 _last_refresh = 0.0
 
 

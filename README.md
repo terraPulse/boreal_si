@@ -17,7 +17,7 @@ bash build_env.sh   # updates the 'python' conda env from dependencies.yml
 
 Both scripts import `lpdaac_access.py` when they start. It reads `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD` from the MAAP secrets, logs in with `earthaccess`, gets temporary S3 credentials for LP DAAC and sets the GDAL options. The scripts therefore need to run in an environment where the MAAP secrets are available. HLS data is read from S3 with those credentials.
 
-The temporary S3 credentials last about an hour. Both scripts check their age before reading each scene and get new ones when they are older than 45 minutes (`S3_CREDENTIAL_MAX_AGE` in `lpdaac_access.py`). If a refresh fails, a warning is logged and the old credentials are kept.
+The temporary S3 credentials last about an hour. Both scripts check their age before reading each scene and get new ones when they are older than 50 minutes (`S3_CREDENTIAL_MAX_AGE` in `lpdaac_access.py`). If a refresh fails, a warning is logged and the old credentials are kept.
 
 Landsat Collection 2 data is read from the requester-pays `usgs-landsat` S3 bucket, so the environment needs AWS credentials that can pay for those requests.
 
@@ -167,7 +167,7 @@ If a scene has a missing or unreadable asset, it is skipped with a warning and t
 | `si_utils.py` | Index definitions, QA masking, warping, band loading, COG writing |
 | `tile_utils.py` | Tile id parsing and bounds |
 | `stac_output.py` | STAC item and catalog generation |
-| `lpdaac_access.py` | Earthdata login, LP DAAC S3 credentials (refreshed every 45 minutes) and GDAL options; logs in on import |
+| `lpdaac_access.py` | Earthdata login, LP DAAC S3 credentials (refreshed every 50 minutes) and GDAL options; logs in on import |
 | `run_calc.sh` | DPS entry point for `calc_si.py` |
 | `run_composite.sh` | DPS entry point for `composite_si.py` |
 | `build_env.sh` | Conda environment update |
