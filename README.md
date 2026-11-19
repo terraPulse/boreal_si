@@ -93,7 +93,7 @@ Defined in `sources.py` (`SOURCES`).
 
 For `hls-vi`, `composite_si.py` does not use the STAC API. It searches CMR's granule API (`https://cmr.earthdata.nasa.gov/search/granules.umm_json`) directly, with one request per collection that covers the `--ds` to `--de` window of every year (up to 2000 granules per page). A 14-year job therefore sends 2 search requests instead of about 30. The results are the same scenes and asset links as the STAC search. This is set by `cmr_provider` and `cmr_collections` in `sources.py`; sources without them (`landsat-vi`) still use the STAC API, one search per year.
 
-Before searching, each `composite_si.py` job waits a random 0 to 10 minutes (`SEARCH_START_JITTER`), so that many jobs started together do not search at the same moment.
+Before searching, each `composite_si.py` job waits a random 0 to 2 minutes (`SEARCH_START_JITTER`), so that many jobs started together do not search at the same moment.
 
 STAC and CMR searches wait and retry when the server throttles them. CMR answers requests over its rate limit with HTTP 429 and a `Retry-After` header ([CMR request moderation](https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html#request-moderation)). `open_stac_client` and `search_cmr_by_year` in `si_utils.py` wait at least the time in that header. While the failures continue, the wait also grows as 2, 4, 8, … seconds up to 120 s, plus random jitter of up to 50% so that parallel jobs do not retry at the same moment. It retries up to 30 times, so a persistent throttle is waited out for about 50 minutes. HTTP 500, 502, 503 and 504 and connection errors are retried the same way. Each wait is logged as a warning. If all retries fail, the job stops with an error.
 
@@ -135,9 +135,13 @@ All COGs are Int16 and LZW-compressed. The nodata value is −19999, except for 
 
 - `<tile>_<year>_<INDEX>_med.tif`: median, truncated toward zero to an integer.
 - `<tile>_<year>_<INDEX>_max.tif`: maximum.
-- `<tile>_<year>_<INDEX>_cnt.tif`: number of valid scenes used for each pixel. Int16 with nodata 0 (not −19999) and no scaling, so its STAC raster `scale` is 1.
+- `<tile>_<year>_<INDEX>_cnt.tif`: number of valid acquisitions used for each pixel. Int16 with nodata 0 (not −19999) and no scaling, so its STAC raster `scale` is 1.
 
-`composite_si.py` searches once per year and reuses the scene list for every index. It holds each usable scene as an Int16 array and computes the median and maximum in blocks of rows. The block size is chosen from the number of scenes so that the arrays stay within `MEMORY_BUDGET` (10 GiB, in `composite_si.py`). On a 16 GiB machine, a 1° tile with 100 scenes peaks at about 11 GiB. Above about 320 scenes per tile the held scenes alone exceed the budget, and a warning is logged. A pixel with no valid observation is nodata. In `composite_si.py` a pixel is masked when it is flagged in QA or outside `val_min` to `val_max`.
+`composite_si.py` works on acquisitions, not granules. One HLS overpass is split over several MGRS tiles, so a 1° tile gets up to 4 granules per acquisition (for 167W65N in 2020, 138 granules in 52 acquisitions). Granules with the same sensor and acquisition time in their id are mosaicked into one array with a single `gdal.Warp`. Each acquisition is therefore counted once in the median, maximum and count, also where adjacent MGRS tiles overlap. Other ids (for example `landsat-vi`) are not merged.
+
+For each year the QA (Fmask) mask of an acquisition is read once and reused for every index, kept as packed bits. An acquisition with no usable pixel in the tile (all cloud, or outside the tile) is skipped for the remaining indices without reading them. Acquisitions are read from S3 in `READ_THREADS` (8) parallel threads. These reads do not go to CMR, so they do not count toward its search rate limit. Each warp also overlaps reading and warping (`multithread=True`). `lpdaac_access.py` sets `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` and a 256 MB `CPL_VSIL_CURL_CACHE_SIZE`, and COGs are compressed with all CPUs (`NUM_THREADS=ALL_CPUS`).
+
+The median, maximum and count are computed from the sorted Int16 values of each pixel in blocks of rows, without masked arrays (about 6 times faster than `np.ma.median`, with identical results). The block size is chosen from the number of acquisitions so that the arrays stay within `MEMORY_BUDGET` (10 GiB, in `composite_si.py`). On a 1° tile, 150 acquisitions measured a peak of about 9 GiB, which leaves room for the reads in flight on a 16 GiB machine. Above about 320 acquisitions per tile and year the held arrays alone exceed the budget, and a warning is logged. A pixel with no valid observation is nodata. In `composite_si.py` a pixel is masked when it is flagged in QA or outside `val_min` to `val_max`.
 
 For each job, `catalog.json` is a self-contained STAC catalog that links all items written by the job.
 

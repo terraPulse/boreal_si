@@ -5,6 +5,7 @@ logs in with earthaccess, and sets the GDAL options used to read LP DAAC data.
 """
 import os
 import time
+import threading
 import logging
 import earthaccess
 from maap.maap import MAAP
@@ -20,6 +21,7 @@ earthaccess.login(strategy="environment")
 
 S3_CREDENTIAL_MAX_AGE = 50 * 60   # seconds; the temporary LP DAAC credentials last about an hour
 _last_refresh = 0.0
+_refresh_lock = threading.Lock()    # composite_si.py reads scenes in several threads
 
 
 def refresh_s3_credentials(force=False):
@@ -30,6 +32,14 @@ def refresh_s3_credentials(force=False):
 	global _last_refresh
 	if not force and time.monotonic() - _last_refresh < S3_CREDENTIAL_MAX_AGE:
 		return
+	with _refresh_lock:
+		if not force and time.monotonic() - _last_refresh < S3_CREDENTIAL_MAX_AGE:
+			return    # another thread refreshed while this one waited
+		_refresh(force)
+
+
+def _refresh(force):
+	global _last_refresh
 	try:
 		creds = earthaccess.get_s3_credentials(daac="LPDAAC")
 		gdal.SetConfigOption("AWS_ACCESS_KEY_ID", creds["accessKeyId"])
@@ -56,4 +66,6 @@ gdal.SetConfigOption('GDAL_HTTP_MAX_RETRY', '10')
 gdal.SetConfigOption('GDAL_HTTP_RETRY_DELAY', '0.5')
 gdal.SetConfigOption('AWS_REQUEST_PAYER', 'requester')
 gdal.SetConfigOption('VSI_CACHE', 'TRUE')
+gdal.SetConfigOption('GDAL_HTTP_MERGE_CONSECUTIVE_RANGES', 'YES')    # fewer, larger range requests per COG
+gdal.SetConfigOption('CPL_VSIL_CURL_CACHE_SIZE', str(256 * 2**20))   # 256 MB block cache shared by all reads
 gdal.UseExceptions()

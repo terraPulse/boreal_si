@@ -1,13 +1,16 @@
 import os
+import re
 import time
 import random
 import argparse
 import logging
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from stac_output import write_stac_item, write_stac_catalog
 from tile_utils import tile_bounds
 from sources import SOURCES
-from si_utils import (open_stac_client, search_cmr_by_year, NODATA, parse_indices, make_warp_options, load_si_band, write_cog)
+from si_utils import (open_stac_client, search_cmr_by_year, NODATA, parse_indices, make_warp_options,
+                      load_si_acquisition, write_cog)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger("boreal_si")
@@ -15,18 +18,36 @@ logger = logging.getLogger("boreal_si")
 import lpdaac_access  # logs in and sets up S3 credentials and GDAL config on import; refreshes them during long runs
 
 SEARCH_PAD = 0.0125           # bbox padding for the scene search (degrees)
-SEARCH_START_JITTER = 600     # seconds; random wait before the search so that many jobs do not search at once
+SEARCH_START_JITTER = 120     # seconds; random wait before the search so that many jobs do not search at once
+READ_THREADS = 8              # scenes read from S3 at the same time (S3 reads do not count toward the CMR rate limit)
 
 # Memory model for the block-wise statistics (bytes per scene per pixel):
-#  - every scene is held as an Int16 array for the whole year/index (2 bytes);
-#  - computing the median and maximum on a block of rows needs about 16 bytes per scene
-#    per pixel of the block (measured: stack, mask and the sorted copies made by np.ma.median).
-# MEMORY_BUDGET is the total for these arrays. Measured peaks run about 5-6% above the model,
-# so 10 GiB gives a peak of about 10.7 GiB and leaves more than 5 GiB of a 16 GiB machine for
-# the OS, Python, the GDAL cache and the per-scene reads.
+#  - every acquisition is held as an Int16 array for the whole year/index (2 bytes);
+#  - computing median, maximum and count on a block of rows needs about BLOCK_BYTES per scene per
+#    pixel of the block (measured: the stacked block, its in-place sort and the valid-pixel test).
+# MEMORY_BUDGET is the total for these arrays. It leaves more than 5 GiB of a 16 GiB machine for
+# the OS, Python, the GDAL cache and the READ_THREADS reads in flight.
 MEMORY_BUDGET = 10 * 2**30
 HELD_BYTES = 2
-BLOCK_BYTES = 16
+BLOCK_BYTES = 4
+
+# HLS granule ids: HLS-VI.<sensor>.T<MGRS tile>.<acquisition time>.v2.0. Granules of one overpass
+# share sensor and acquisition time and differ only in the MGRS tile.
+HLS_ID = re.compile(r'^HLS(?:-VI)?\.(?P<sensor>[LS]30)\.T\w{5}\.(?P<time>\d{7}T\d{6})\.')
+
+
+def acquisition_key(item_dict):
+	"""Key shared by the granules of one acquisition; other ids are their own acquisition."""
+	m = HLS_ID.match(item_dict['id'])
+	return f"{m['sensor']}.{m['time']}" if m else item_dict['id']
+
+
+def group_acquisitions(items):
+	"""Group items by acquisition, keeping the search order. Return {key: [item, ...]}."""
+	groups = {}
+	for item in items:
+		groups.setdefault(acquisition_key(item), []).append(item)
+	return groups
 
 
 def block_rows(n_scenes, ny, nx, budget=MEMORY_BUDGET):
@@ -45,7 +66,12 @@ def block_stats(si_arrays, fill_value, budget=MEMORY_BUDGET):
 	si_arrays is a list of 2D Int16 arrays of the same shape with NODATA where a scene has no
 	valid value. Return (median, maximum, count) as Int16 arrays. count is the number of valid
 	scenes that went into the median and maximum of each pixel; pixels with no valid scene get
-	fill_value in median and maximum and 0 in count.
+	fill_value in median and maximum and 0 in count. The median of an even count is the mean of the
+	two middle values, truncated toward zero (as np.ma.median(...).astype(np.int16)).
+
+	NODATA (-19999) is below every valid value, so after sorting each pixel's values the n - count
+	NODATA values come first and the valid values follow in order. This avoids masked arrays, which
+	are about 6 times slower and need several times the memory.
 	"""
 	n_scenes = len(si_arrays)
 	ny, nx = si_arrays[0].shape
@@ -56,22 +82,55 @@ def block_stats(si_arrays, fill_value, budget=MEMORY_BUDGET):
 	count = np.zeros((ny, nx), dtype=np.int16)
 	for r0 in range(0, ny, rows):
 		r1 = min(r0 + rows, ny)
-		block = np.ma.masked_equal(np.stack([a[r0:r1] for a in si_arrays], axis=0), NODATA)
-		med[r0:r1] = np.ma.median(block, axis=0).filled(fill_value).astype(np.int16)
-		max_[r0:r1] = np.ma.max(block, axis=0).filled(fill_value).astype(np.int16)
-		count[r0:r1] = block.count(axis=0)
-		del block
+		block = np.stack([a[r0:r1] for a in si_arrays], axis=0)
+		cnt = np.count_nonzero(block != NODATA, axis=0).astype(np.int32)
+		block.sort(axis=0)
+		first = n_scenes - cnt                                   # index of the smallest valid value
+		lo = np.clip(first + (cnt - 1) // 2, 0, n_scenes - 1)[None]
+		hi = np.clip(first + cnt // 2, 0, n_scenes - 1)[None]
+		mid = (np.take_along_axis(block, lo, 0)[0].astype(np.float32)
+			   + np.take_along_axis(block, hi, 0)[0].astype(np.float32)) / 2
+		has = cnt > 0
+		med[r0:r1] = np.where(has, mid, fill_value).astype(np.int16)
+		max_[r0:r1] = np.where(has, block[-1], fill_value)
+		count[r0:r1] = cnt
+		del block, cnt, first, lo, hi, mid, has
 	return med, max_, count
 
 
+def read_acquisitions(groups, si, source, tile, qa_cache):
+	"""Read index si for every acquisition in parallel. Return (arrays, gt, wkt, n_empty, n_failed)."""
+	def read_one(key):
+		lpdaac_access.refresh_s3_credentials()
+		# Warp options are built per call so that no GDAL options object is shared between threads.
+		band_options = make_warp_options(tile, source.band_nodata, multithread=True)
+		qa_options = make_warp_options(tile, source.qa_nodata, multithread=True)
+		try:
+			return key, load_si_acquisition(groups[key], si, source, band_options, qa_options, qa_cache, key), None
+		except Exception as err:
+			return key, None, err
+
+	arrays, gt, wkt, n_empty, n_failed = [], None, None, 0, 0
+	with ThreadPoolExecutor(max_workers=READ_THREADS) as pool:
+		for key, result, err in pool.map(read_one, list(groups)):    # results come back in input order
+			ids = ','.join(item['id'] for item in groups[key])
+			if err is not None:
+				n_failed += 1
+				logger.warning(f'Skipping {ids} for {si}: {err}')
+			elif result is None:
+				n_empty += 1
+				logger.info(f'No valid pixels in {ids} for {si}')
+			else:
+				array, gt, wkt = result
+				arrays.append(array)
+				logger.info(f'Read {ids} for {si}')
+	return arrays, gt, wkt, n_empty, n_failed
 
 
 def composite_index(tile, indices, ys, ye, ds, de, src, output):
 	source = SOURCES[src]
 	index_names = parse_indices(indices)
 	xmin, ymin, xmax, ymax = tile_bounds(tile)
-	band_options = make_warp_options(tile, source.band_nodata)
-	qa_options = make_warp_options(tile, source.qa_nodata)
 	search_bbox = (xmin - SEARCH_PAD, ymin - SEARCH_PAD, xmax + SEARCH_PAD, ymax + SEARCH_PAD)
 	os.makedirs(output, exist_ok=True)
 
@@ -91,25 +150,16 @@ def composite_index(tile, indices, ys, ye, ds, de, src, output):
 			query = catalog.search(collections=list(source.collections), datetime=f'{year}-{ds}/{year}-{de}',
 								   limit=100, bbox=search_bbox)
 			items = [f for page in query.pages_as_dicts() for f in page['features']]    # once per year, not per index
-		logger.info(f'{len(items)} scenes found for {tile},{year}')
+		groups = group_acquisitions(items)
+		qa_cache = {}    # acquisition -> packed QA mask (or None when nothing is usable), shared by all indices
+		logger.info(f'{len(items)} granules in {len(groups)} acquisitions found for {tile},{year}')
 		for si in index_names:
-			si_arrays = []
-			gt = wkt = None
-			for item_dict in items:
-				scene_id = item_dict['id']
-				logger.info(f'Found {scene_id} at {tile},{year} for {si}')
-				lpdaac_access.refresh_s3_credentials()
-				try:
-					asset_key = source.band_assets[item_dict.get('collection')][si]
-					si_array, gt, wkt = load_si_band(item_dict, asset_key, source, band_options, qa_options)
-					si_arrays.append(np.asarray(si_array.data, dtype=np.int16))   # masked pixels hold NODATA
-				except Exception as err:
-					logger.warning(f'Skipping {scene_id} at {tile},{year} for {si}: {err}')
-					continue
+			si_arrays, gt, wkt, n_empty, n_failed = read_acquisitions(groups, si, source, tile, qa_cache)
+			logger.info(f'{tile},{year},{si}: {len(si_arrays)} acquisitions used, {n_empty} without valid pixels, '
+						f'{n_failed} failed')
 			if not si_arrays:
 				logger.warning(f'No usable scenes for {tile},{year},{si}')
 				continue
-			logger.info(f'{len(si_arrays)} scenes used for {tile},{year},{si}')
 			si_med, si_max, si_cnt = block_stats(si_arrays, source.band_nodata)
 			del si_arrays                             # frees the per-scene arrays
 			for stat, si_out, desc, scale_factor, nodata in (
@@ -125,6 +175,7 @@ def composite_index(tile, indices, ys, ye, ds, de, src, output):
 					logger.error(f'STAC item failed for {out_file}: {err}')
 				item_files.append(out_file[:-len('.tif')] + '.json')
 			del si_med, si_max, si_cnt
+		del qa_cache
 	try:
 		write_stac_catalog(output, 'Boreal SI Composite Outputs', [p for p in item_files if os.path.exists(p)])
 	except Exception as err:

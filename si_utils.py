@@ -148,10 +148,12 @@ def mask_qa(qa_arr, qa_bits, mask_list=DEFAULT_MASK):
 	return msk
 
 
-def make_warp_options(tile, nodata):
+def make_warp_options(tile, nodata, multithread=False):
+	"""Warp options for the tile grid. multithread=True overlaps reading and warping inside one gdal.Warp call."""
 	xmin, ymin, xmax, ymax = tile_bounds(tile)
 	return gdal.WarpOptions(xRes=RES, yRes=RES, srcNodata=nodata, dstNodata=nodata, dstSRS='EPSG:4326',
-							outputBounds=[xmin, ymin, xmax, ymax], format='MEM', targetAlignedPixels=True)
+							outputBounds=[xmin, ymin, xmax, ymax], format='MEM', targetAlignedPixels=True,
+							multithread=multithread)
 
 
 def to_vsi(href):
@@ -172,7 +174,10 @@ def asset_href(item_dict, asset_name):
 
 
 def read_warped(src, warp_options):
-	"""Warp src to the tile grid in memory; return (array, geotransform, projection)."""
+	"""Warp src (one path or a list of paths, mosaicked in order) to the tile grid in memory.
+
+	Return (array, geotransform, projection).
+	"""
 	ds = gdal.Warp('', src, options=warp_options)
 	try:
 		return ds.GetRasterBand(1).ReadAsArray(), ds.GetGeoTransform(), ds.GetProjectionRef()
@@ -200,21 +205,51 @@ def load_band(item_dict, asset_key, source, band_options):
 	return np.where(valid, source.scale_factor * dn.astype(np.float32) + source.offset, np.nan).astype(np.float32)
 
 
-def load_si_band(item_dict, asset_key, source, band_options, qa_options):
-	"""Read one precomputed index (VI) band as a masked array; pixels flagged in QA or outside the valid range are masked.
-
-	Return (masked_array, geotransform, projection).
-	"""
+def _asset_path(item_dict, asset_key):
 	href = asset_href(item_dict, asset_key)
 	if href is None:
-		raise KeyError(f'{asset_key} asset missing')
-	if 'usgs-landsat-ard' in href:
-		raise FileNotFoundError(f'{href} is an ARD path and is not supported')
-	si, _, _ = read_warped(to_vsi(href), band_options)
-	qa_mask, gt, wkt = load_qa_mask(item_dict, source, qa_options)
-	invalid = qa_mask | (si < source.val_min) | (si > source.val_max)
-	si = np.where(invalid, NODATA, si)
-	return np.ma.masked_equal(si, NODATA), gt, wkt
+		raise KeyError(f'{asset_key} asset missing in {item_dict["id"]}')
+	return href
+
+
+def load_si_acquisition(items, index, source, band_options, qa_options, qa_cache, key):
+	"""Read one precomputed index (VI) for one acquisition, mosaicking its granules into the tile grid.
+
+	items are the granules of one acquisition (the same overpass split over several MGRS tiles).
+	Pixels flagged in QA or outside the source's valid range are set to NODATA.
+
+	The QA mask of an acquisition is the same for every index, so it is read only once and kept in
+	qa_cache[key] as packed bits (about 2 MB for a 1-degree tile). If the acquisition has no usable
+	pixel in the tile, qa_cache[key] is set to None and later indices skip it without reading.
+
+	Return (int16_array, geotransform, projection), or None when the acquisition has no valid pixel.
+	"""
+	if qa_cache.get(key, 0) is None:
+		return None
+	paths = []
+	for item in items:
+		href = _asset_path(item, source.band_assets[item['collection']][index])
+		if 'usgs-landsat-ard' in href:
+			raise FileNotFoundError(f'{href} is an ARD path and is not supported')
+		paths.append(to_vsi(href))
+	si, gt, wkt = read_warped(paths, band_options)
+	if key in qa_cache:
+		packed, shape = qa_cache[key]
+		usable = np.unpackbits(packed, count=shape[0] * shape[1]).reshape(shape).astype(bool)
+	else:
+		qa_paths = [to_vsi(_asset_path(item, source.qa_asset)).replace('usgs-landsat-ard/', 'usgs-landsat/')
+					for item in items]
+		qa_array, _, _ = read_warped(qa_paths, qa_options)
+		usable = ~mask_qa(qa_array, source.qa_bits)    # QA nodata (255) has the cloud bits set, so it is masked too
+		del qa_array
+		if not usable.any():
+			qa_cache[key] = None
+			return None
+		qa_cache[key] = (np.packbits(usable), usable.shape)
+	valid = usable & (si >= source.val_min) & (si <= source.val_max)
+	if not valid.any():
+		return None
+	return np.where(valid, si, NODATA).astype(np.int16), gt, wkt
 
 
 def write_cog(array, gt, wkt, cog_file, nodata=NODATA):
@@ -228,7 +263,7 @@ def write_cog(array, gt, wkt, cog_file, nodata=NODATA):
 	band.FlushCache()
 	part = cog_file + '.part'
 	try:
-		gdal.Translate(part, mem, format='COG', creationOptions=['COMPRESS=LZW'])
+		gdal.Translate(part, mem, format='COG', creationOptions=['COMPRESS=LZW', 'NUM_THREADS=ALL_CPUS'])
 		os.replace(part, cog_file)
 	finally:
 		mem = None
