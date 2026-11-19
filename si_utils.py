@@ -4,6 +4,8 @@ import time
 import random
 import logging
 import numpy as np
+import requests
+from requests.adapters import HTTPAdapter
 from osgeo import gdal
 from pystac_client import Client
 from pystac_client.stac_api_io import StacApiIO
@@ -66,9 +68,66 @@ def open_stac_client(url, max_retries=30):
 	503, 504 and connection errors are retried the same way. The search is a POST, so all methods
 	are retried.
 	"""
-	retry = _LoggingRetry(total=max_retries, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504),
-						  allowed_methods=None, respect_retry_after_header=True)
-	return Client.open(url, stac_io=StacApiIO(max_retries=retry))
+	return Client.open(url, stac_io=StacApiIO(max_retries=_retry(max_retries)))
+
+
+def _retry(max_retries):
+	return _LoggingRetry(total=max_retries, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504),
+						 allowed_methods=None, respect_retry_after_header=True)
+
+
+CMR_GRANULES_URL = 'https://cmr.earthdata.nasa.gov/search/granules.umm_json'
+CMR_PAGE_SIZE = 2000          # largest page CMR allows
+
+
+def _cmr_item(umm, collection):
+	"""Turn a CMR UMM-G granule into the STAC-like item dict that the rest of the code reads.
+
+	Asset keys follow CMR-STAC: the part of the file name before '.tif' (e.g. 'NDVI', 'Fmask'),
+	prefixed with 's3_' for the s3:// link.
+	"""
+	assets = {}
+	for related in umm.get('RelatedUrls', []):
+		url = related.get('URL', '')
+		if not url.endswith('.tif'):
+			continue
+		key = url.rsplit('/', 1)[-1].split('.')[-2]
+		assets[('s3_' + key) if url.startswith('s3://') else key] = {'href': url}
+	start = umm['TemporalExtent']['RangeDateTime']['BeginningDateTime']
+	return {'id': umm['GranuleUR'], 'collection': collection, 'properties': {'datetime': start}, 'assets': assets}
+
+
+def search_cmr_by_year(source, bbox, ys, ye, ds, de, max_retries=30):
+	"""Find the granules of every year's ds..de window (MM-DD) in one CMR granule search per collection.
+
+	Return {year: [item_dict, ...]} with the same item layout as a STAC search. Requests that are
+	throttled (HTTP 429) or fail are retried as in open_stac_client. A query that CMR cuts off at its
+	170 s limit (CMR-Time-Out header) raises an error instead of returning partial results.
+	"""
+	session = requests.Session()
+	session.mount('https://', HTTPAdapter(max_retries=_retry(max_retries)))
+	by_year = {y: [] for y in range(ys, ye + 1)}
+	temporal = [('temporal[]', f'{y}-{ds}T00:00:00Z,{y}-{de}T23:59:59Z') for y in by_year]
+	for collection, (short_name, version) in source.cmr_collections.items():
+		params = [('provider', source.cmr_provider), ('short_name', short_name), ('version', version),
+				  ('bounding_box', ','.join(str(v) for v in bbox)), ('page_size', CMR_PAGE_SIZE)] + temporal
+		headers = {'Client-Id': 'boreal_si'}
+		while True:
+			response = session.get(CMR_GRANULES_URL, params=params, headers=headers, timeout=180)
+			response.raise_for_status()
+			if response.headers.get('CMR-Time-Out', '').lower() == 'true':
+				raise RuntimeError(f'CMR search for {short_name} timed out and returned partial results')
+			granules = response.json().get('items', [])
+			for granule in granules:
+				item = _cmr_item(granule['umm'], collection)
+				year = int(item['properties']['datetime'][:4])
+				if year in by_year:
+					by_year[year].append(item)
+			search_after = response.headers.get('CMR-Search-After')
+			if len(granules) < CMR_PAGE_SIZE or not search_after:
+				break
+			headers = {**headers, 'CMR-Search-After': search_after}
+	return by_year
 
 
 def parse_indices(indices):

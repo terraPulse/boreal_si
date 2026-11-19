@@ -1,11 +1,13 @@
 import os
+import time
+import random
 import argparse
 import logging
 import numpy as np
 from stac_output import write_stac_item, write_stac_catalog
 from tile_utils import tile_bounds
 from sources import SOURCES
-from si_utils import (open_stac_client, NODATA, parse_indices, make_warp_options, load_si_band, write_cog)
+from si_utils import (open_stac_client, search_cmr_by_year, NODATA, parse_indices, make_warp_options, load_si_band, write_cog)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger("boreal_si")
@@ -13,6 +15,7 @@ logger = logging.getLogger("boreal_si")
 import lpdaac_access  # logs in and sets up S3 credentials and GDAL config on import; refreshes them during long runs
 
 SEARCH_PAD = 0.0125           # bbox padding for the scene search (degrees)
+SEARCH_START_JITTER = 600     # seconds; random wait before the search so that many jobs do not search at once
 
 # Memory model for the block-wise statistics (bytes per scene per pixel):
 #  - every scene is held as an Int16 array for the whole year/index (2 bytes);
@@ -72,29 +75,37 @@ def composite_index(tile, indices, ys, ye, ds, de, src, output):
 	search_bbox = (xmin - SEARCH_PAD, ymin - SEARCH_PAD, xmax + SEARCH_PAD, ymax + SEARCH_PAD)
 	os.makedirs(output, exist_ok=True)
 
-	catalog = open_stac_client(source.stac_url)
+	delay = random.uniform(0, SEARCH_START_JITTER)
+	logger.info(f'Waiting {delay:.0f} s before searching, to spread out searches from parallel jobs')
+	time.sleep(delay)
+	if source.cmr_collections:
+		items_by_year = search_cmr_by_year(source, search_bbox, ys, ye, ds, de)    # all years at once
+	else:
+		catalog = open_stac_client(source.stac_url)
 	item_files = []
 	collections = ','.join(source.collections)
 	for year in range(ys, ye + 1):
-		query = catalog.search(collections=list(source.collections), datetime=f'{year}-{ds}/{year}-{de}',
-                               limit=100, bbox=search_bbox)
-		pages = list(query.pages_as_dicts())    # search once per year, not once per index
-		logger.info(f'{sum(len(p["features"]) for p in pages)} scenes found for {tile},{year}')
+		if source.cmr_collections:
+			items = items_by_year[year]
+		else:
+			query = catalog.search(collections=list(source.collections), datetime=f'{year}-{ds}/{year}-{de}',
+								   limit=100, bbox=search_bbox)
+			items = [f for page in query.pages_as_dicts() for f in page['features']]    # once per year, not per index
+		logger.info(f'{len(items)} scenes found for {tile},{year}')
 		for si in index_names:
 			si_arrays = []
 			gt = wkt = None
-			for page_dict in pages:
-				for item_dict in page_dict['features']:
-					scene_id = item_dict['id']
-					logger.info(f'Found {scene_id} at {tile},{year} for {si}')
-					lpdaac_access.refresh_s3_credentials()
-					try:
-						asset_key = source.band_assets[item_dict.get('collection')][si]
-						si_array, gt, wkt = load_si_band(item_dict, asset_key, source, band_options, qa_options)
-						si_arrays.append(np.asarray(si_array.data, dtype=np.int16))   # masked pixels hold NODATA
-					except Exception as err:
-						logger.warning(f'Skipping {scene_id} at {tile},{year} for {si}: {err}')
-						continue
+			for item_dict in items:
+				scene_id = item_dict['id']
+				logger.info(f'Found {scene_id} at {tile},{year} for {si}')
+				lpdaac_access.refresh_s3_credentials()
+				try:
+					asset_key = source.band_assets[item_dict.get('collection')][si]
+					si_array, gt, wkt = load_si_band(item_dict, asset_key, source, band_options, qa_options)
+					si_arrays.append(np.asarray(si_array.data, dtype=np.int16))   # masked pixels hold NODATA
+				except Exception as err:
+					logger.warning(f'Skipping {scene_id} at {tile},{year} for {si}: {err}')
+					continue
 			if not si_arrays:
 				logger.warning(f'No usable scenes for {tile},{year},{si}')
 				continue

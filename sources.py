@@ -17,6 +17,10 @@ class SourceConfig:
 	offset: float
 	val_min: int        # valid DN range (inclusive)
 	val_max: int
+	# Optional: search CMR's granule API directly instead of the STAC API (one request per collection
+	# for all years, instead of one or more per year). STAC collection id -> (CMR short name, version).
+	cmr_provider: str = None
+	cmr_collections: dict = None
 
 
 SOURCES = {
@@ -60,5 +64,7 @@ SOURCES = {
 		qa_asset='s3_Fmask',
 		qa_bits={'cirrus': 0, 'cloud': 1, 'dilated_cloud': 2, 'shadow': 3, 'snow': 4, 'water': 5},
 		qa_nodata=255, band_nodata=-19999,
-		scale_factor=0.0001, offset=0.0, val_min=-10000, val_max=10000),
+		scale_factor=0.0001, offset=0.0, val_min=-10000, val_max=10000,
+		cmr_provider='LPCLOUD',
+		cmr_collections={'HLSL30_VI_2.0': ('HLSL30_VI', '2.0'), 'HLSS30_VI_2.0': ('HLSS30_VI', '2.0')}),
 }

@@ -12,6 +12,7 @@ dependencies:
   - jsonschema
   - earthaccess
   - numpy
+  - requests
   - importlib-resources<7   # maap-py requires <7
   - pip
   - pip:
