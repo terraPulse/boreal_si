@@ -32,12 +32,12 @@ def _footprint(ds):
 	return bbox, {"type": "Polygon", "coordinates": [ring]}
 
 
-def write_stac_item(cog_path, tile, year, index, source_id, date_str, equation, scale_factor, nodata,
+def write_stac_item(cog_path, tile, year, index, source_id, date_str, composite, scale_factor, nodata,
 					source_collection):
 	"""Write <cog>.json beside the COG and return the path to the item."""
 	cog = Path(cog_path).resolve()
 	item_path = cog.with_suffix(".json")
-	dt = datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=timezone.utc)
+	dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
 	ds = gdal.Open(str(cog))
 	bbox, geometry = _footprint(ds)
@@ -58,7 +58,7 @@ def write_stac_item(cog_path, tile, year, index, source_id, date_str, equation, 
 			"boreal_si:tile": tile,
 			"boreal_si:year": int(year),
 			"boreal_si:index": index,
-			"boreal_si:equation": equation,
+			"boreal_si:composite": composite,
 			"boreal_si:scale_factor": scale_factor,
 			"boreal_si:source_item": source_id,
 			"boreal_si:source_collection": source_collection,
@@ -70,12 +70,15 @@ def write_stac_item(cog_path, tile, year, index, source_id, date_str, equation, 
 	proj.shape = shape
 	proj.transform = transform
 	proj.bbox = None
-
+	if composite == 'None':
+		title=f"{index.upper()} {source_id}"
+	else:
+		title=f"{index.upper()} {composite}"
 	asset = pystac.Asset(href=cog.name, media_type=pystac.MediaType.COG,
-						 roles=["data"], title=f"{index.upper()} {source_id}")
+						 roles=["data"], title=title)
 	item.add_asset(index, asset)
 	RasterExtension.ext(asset, add_if_missing=True).bands = [
-		RasterBand.create(data_type=DataType.INT16, nodata=nodata, scale=1.0 / scale_factor, unit="1")]
+		RasterBand.create(data_type=DataType.INT16, nodata=nodata, scale=scale_factor, unit="1")]
 	asset.extra_fields["bands"] = [{"name": index, "description": f"{index.upper()} scaled by {scale_factor}"}]
 
 	item.set_self_href(str(item_path))
@@ -84,11 +87,11 @@ def write_stac_item(cog_path, tile, year, index, source_id, date_str, equation, 
 	return str(item_path)
 
 
-def write_stac_catalog(output_dir, item_paths=None):
+def write_stac_catalog(output_dir, desc, item_paths=None):
 	"""Write catalog.json in output_dir linking the given item JSONs (default: all *.json except the catalog)."""
 	out = Path(output_dir).resolve()
 	catalog_path = out / "catalog.json"
-	catalog = pystac.Catalog(id="DPS", description="Boreal spectral index outputs",
+	catalog = pystac.Catalog(id="DPS", description=desc,
 							 catalog_type=pystac.CatalogType.SELF_CONTAINED)
 	catalog.set_self_href(str(catalog_path))
 	if item_paths is None:

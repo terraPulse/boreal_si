@@ -9,3 +9,5 @@ dependencies:
   - pystac-client
   - pystac
   - jsonschema
+  - earthaccess
+  - numpy
