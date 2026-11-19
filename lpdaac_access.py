@@ -18,7 +18,7 @@ os.environ['CPL_VSIL_CURL_NON_CACHED'] = '/vsis3/'
 os.environ['GDAL_MAX_DATASET_POOL_SIZE'] = '4000'
 earthaccess.login(strategy="environment")
 
-S3_CREDENTIAL_MAX_AGE = 45 * 60   # seconds; the temporary LP DAAC credentials last about an hour
+S3_CREDENTIAL_MAX_AGE = 55 * 60   # seconds; the temporary LP DAAC credentials last about an hour
 _last_refresh = 0.0
 
 
@@ -32,16 +32,17 @@ def refresh_s3_credentials(force=False):
 		return
 	try:
 		creds = earthaccess.get_s3_credentials(daac="LPDAAC")
+		gdal.SetConfigOption("AWS_ACCESS_KEY_ID", creds["accessKeyId"])
+		gdal.SetConfigOption("AWS_SECRET_ACCESS_KEY", creds["secretAccessKey"])
+		gdal.SetConfigOption("AWS_SESSION_TOKEN", creds["sessionToken"])
+		gdal.SetConfigOption("AWS_REGION", "us-west-2")
+		_last_refresh = time.monotonic()
 	except Exception as err:
 		if force:
 			raise
 		logging.getLogger("boreal_si").warning(f'S3 credential refresh failed, keeping the old credentials: {err}')
 		return
-	gdal.SetConfigOption("AWS_ACCESS_KEY_ID", creds["accessKeyId"])
-	gdal.SetConfigOption("AWS_SECRET_ACCESS_KEY", creds["secretAccessKey"])
-	gdal.SetConfigOption("AWS_SESSION_TOKEN", creds["sessionToken"])
-	gdal.SetConfigOption("AWS_REGION", "us-west-2")
-	_last_refresh = time.monotonic()
+	
 
 
 refresh_s3_credentials(force=True)
