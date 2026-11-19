@@ -3,11 +3,10 @@ import argparse
 import logging
 import numpy as np
 import numexpr as ne
-from pystac_client import Client
 from stac_output import write_stac_item, write_stac_catalog
 from tile_utils import tile_bounds
 from sources import SOURCES
-from si_utils import (INDEX_BANDS, INDEX_EQUATIONS, parse_indices, make_warp_options,
+from si_utils import (open_stac_client, INDEX_BANDS, INDEX_EQUATIONS, parse_indices, make_warp_options,
                       load_qa_mask, load_band, write_cog)
 
 
@@ -62,7 +61,7 @@ def calc_index(tile, indices, ys, ye, ds, de, src, output):
 	search_bbox = (xmin - SEARCH_PAD, ymin - SEARCH_PAD, xmax + SEARCH_PAD, ymax + SEARCH_PAD)
 	os.makedirs(output, exist_ok=True)
 
-	catalog = Client.open(source.stac_url)
+	catalog = open_stac_client(source.stac_url)
 	item_files = []
 	for year in range(ys, ye + 1):
 		query = catalog.search(collections=list(source.collections), datetime=f'{year}-{ds}/{year}-{de}',

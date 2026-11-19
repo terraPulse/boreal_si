@@ -91,6 +91,8 @@ Defined in `sources.py` (`SOURCES`).
 | `landsat-vi` | `composite_si.py`, output scaling of `calc_si.py` | `https://dps-stac.maap-project.org` | `landsat-vi` | Precomputed Landsat indices |
 | `hls-vi` | `composite_si.py`, output scaling of `calc_si.py` | `https://cmr.earthdata.nasa.gov/stac/LPCLOUD` | `HLSL30_VI_2.0`, `HLSS30_VI_2.0` | HLS v2.0 vegetation indices |
 
+STAC searches wait and retry when the server throttles them. CMR answers requests over its rate limit with HTTP 429 and a `Retry-After` header ([CMR request moderation](https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html#request-moderation)). `open_stac_client` in `si_utils.py` waits for the time in that header and retries, up to 10 times. It does the same for HTTP 500, 502, 503 and 504 and for connection errors, using a 2, 4, 8, … second backoff (at most 120 s) when there is no `Retry-After`. Each wait is logged as a warning. If all retries fail, the job stops with an error.
+
 For each source, `sources.py` defines the band or index assets, the QA asset and bits, the nodata values, `scale_factor` and `offset` (value = `scale_factor` × DN + `offset`), and the valid DN range (`val_min` to `val_max`).
 
 `calc_si.py` reads the bands of the `-sr` source. It writes its results using the scale, valid range and nodata of the matching `-vi` source (`landsat-sr` → `landsat-vi`, `hls-sr` → `hls-vi`). Index values are therefore stored as `index / scale_factor` (that is, index × 10000) in Int16, truncated toward zero. Results outside `val_min` to `val_max` (−10000 to 10000) become nodata (−19999).

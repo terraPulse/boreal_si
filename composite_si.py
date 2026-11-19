@@ -2,11 +2,10 @@ import os
 import argparse
 import logging
 import numpy as np
-from pystac_client import Client
 from stac_output import write_stac_item, write_stac_catalog
 from tile_utils import tile_bounds
 from sources import SOURCES
-from si_utils import (NODATA, parse_indices, make_warp_options, load_si_band, write_cog)
+from si_utils import (open_stac_client, NODATA, parse_indices, make_warp_options, load_si_band, write_cog)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger("boreal_si")
@@ -73,7 +72,7 @@ def composite_index(tile, indices, ys, ye, ds, de, src, output):
 	search_bbox = (xmin - SEARCH_PAD, ymin - SEARCH_PAD, xmax + SEARCH_PAD, ymax + SEARCH_PAD)
 	os.makedirs(output, exist_ok=True)
 
-	catalog = Client.open(source.stac_url)
+	catalog = open_stac_client(source.stac_url)
 	item_files = []
 	collections = ','.join(source.collections)
 	for year in range(ys, ye + 1):

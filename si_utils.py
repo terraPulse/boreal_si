@@ -1,7 +1,11 @@
 """Shared helpers for boreal_si: index definitions, QA masking, warping, band loading and COG writing."""
 import os
+import logging
 import numpy as np
 from osgeo import gdal
+from pystac_client import Client
+from pystac_client.stac_api_io import StacApiIO
+from urllib3 import Retry
 from tile_utils import tile_bounds
 
 RES = 0.00025                 # output pixel size in degrees
@@ -32,6 +36,31 @@ INDEX_EQUATIONS = {
 	'TVI': '0.5*(120*(nir08-green)-200*(red-green))',
 	'NDSI': '(green-swir16)/(green+swir16)',
 }
+
+
+class _LoggingRetry(Retry):
+	"""urllib3 Retry that logs each wait."""
+
+	def sleep(self, response=None):
+		retry_after = self.get_retry_after(response) if response is not None else None
+		wait = retry_after if retry_after is not None else self.get_backoff_time()
+		status = response.status if response is not None else 'connection error'
+		logging.getLogger("boreal_si").warning(f'STAC request failed ({status}); waiting {wait:.0f} s before retrying')
+		super().sleep(response)
+
+
+def open_stac_client(url, max_retries=20):
+	"""Open a STAC API client that waits and retries when the server throttles or fails.
+
+	CMR (https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html) answers requests over its
+	rate limit with HTTP 429 and a Retry-After header, and asks clients to wait that long before
+	retrying. urllib3 honors Retry-After for 429 and 503. Other failures (500, 502, 504, connection
+	errors) use exponential backoff of 2, 4, 8, ... seconds, capped at 120 s. The search is a POST,
+	so all methods are retried.
+	"""
+	retry = _LoggingRetry(total=max_retries, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504),
+						  allowed_methods=None, respect_retry_after_header=True)
+	return Client.open(url, stac_io=StacApiIO(max_retries=retry))
 
 
 def parse_indices(indices):
