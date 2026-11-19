@@ -1,5 +1,7 @@
 """Shared helpers for boreal_si: index definitions, QA masking, warping, band loading and COG writing."""
 import os
+import time
+import random
 import logging
 import numpy as np
 from osgeo import gdal
@@ -39,24 +41,30 @@ INDEX_EQUATIONS = {
 
 
 class _LoggingRetry(Retry):
-	"""urllib3 Retry that logs each wait."""
+	"""urllib3 Retry that waits at least the server's Retry-After time, backs off further while the
+	failures continue, adds random jitter so parallel jobs do not retry in lockstep, and logs each wait.
+	"""
 
 	def sleep(self, response=None):
 		retry_after = self.get_retry_after(response) if response is not None else None
-		wait = retry_after if retry_after is not None else self.get_backoff_time()
+		wait = max(retry_after or 0, self.get_backoff_time())
+		wait += random.uniform(0, 1 + 0.5 * wait)
 		status = response.status if response is not None else 'connection error'
-		logging.getLogger("boreal_si").warning(f'STAC request failed ({status}); waiting {wait:.0f} s before retrying')
-		super().sleep(response)
+		logging.getLogger("boreal_si").warning(
+			f'STAC request failed ({status}, Retry-After {retry_after}); waiting {wait:.0f} s, {self.total} retries left')
+		time.sleep(wait)
 
 
-def open_stac_client(url, max_retries=20):
+def open_stac_client(url, max_retries=30):
 	"""Open a STAC API client that waits and retries when the server throttles or fails.
 
 	CMR (https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html) answers requests over its
 	rate limit with HTTP 429 and a Retry-After header, and asks clients to wait that long before
-	retrying. urllib3 honors Retry-After for 429 and 503. Other failures (500, 502, 504, connection
-	errors) use exponential backoff of 2, 4, 8, ... seconds, capped at 120 s. The search is a POST,
-	so all methods are retried.
+	retrying. Each wait is at least the Retry-After time. While the failures continue the wait also
+	grows as 2, 4, 8, ... seconds up to 120 s, plus random jitter of up to 50%. With 30 retries a
+	persistent throttle is waited out for about 50 minutes before the request fails. HTTP 500, 502,
+	503, 504 and connection errors are retried the same way. The search is a POST, so all methods
+	are retried.
 	"""
 	retry = _LoggingRetry(total=max_retries, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504),
 						  allowed_methods=None, respect_retry_after_header=True)
